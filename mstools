@@ -1,0 +1,1391 @@
+#!/bin/bash
+
+ubu16=$(cat /etc/issue | grep "Ubuntu 16" | wc -l)
+ubu18=$(cat /etc/issue | grep "Ubuntu 18" | wc -l)
+debian=$(cat /etc/issue | grep "Debian" | wc -l)
+debian10=$(cat /etc/issue | grep "10" | wc -l)
+raspbian=$(cat /etc/issue | grep "Raspbian" | wc -l)
+raspbian10=$(cat /etc/issue | grep "10" | wc -l)
+
+if [ $ubu16 == 1 ];then
+	distro=16
+	distro2="Ubuntu_16"
+elif [ $debian == 1 ] && [ $debian10 == 1 ];then
+	distro="deb10"
+	distro2="Debian_10"
+elif [ $raspbian == 1 ] && [ $raspbian10 == 1 ];then
+	distro="rasp10"
+	distro2="Raspbian_10"
+fi
+
+case "$1" in
+
+send_stat)
+if [ "$raspbian" == 1 ];then
+	IFACE=$(ip -o link show | sed -rn '/^[0-9]+: .*state UP.*/{s/.: ([^:]*):.*/\1/p}')
+else
+	IFACE=$(ip -o link show | sed -rn '/^[0-9]+: en/{s/.: ([^:]*):.*/\1/p}')
+fi
+stat_cfg_file="/opt/music_server/sq_cfg/sq_stat.cfg"
+version_cfg_file="/opt/music_server/sq_cfg/sq_version.cfg"
+lang_cfg_file="/opt/music_server/sq_cfg/sq_lang.cfg"
+
+
+file="/opt/music_server/soundcard_cfg/soundcard.cfg"
+check=$(grep -i "sc1_devnr" $file | wc -l)
+if [ "$check" -lt "1" ]; then
+count_soundcards=$(cat /opt/music_server/soundcard_cfg/soundcard.cfg | sed -n '22p')
+else
+source $file
+count_soundcards=$sc_total
+fi
+
+count_channels=$(cat /opt/music_server/soundcard_cfg/defaultcard/default.cfg | grep "channels" | awk '{print $2}')
+count_zones_int="/opt/music_server/sq_cfg/sq_zones.cfg"
+count_zones_ext="/opt/music_server/sq_cfg/sq_zones_ext.cfg"
+if ! [ -f "$stat_cfg_file" ]; then
+echo "file not found"
+uuid=$(ip addr show $IFACE | grep 'link/ether' | tr -s ' ' | cut -d ' ' -f3 | sha256sum | awk '{print $1}')
+echo "UUID="\"$uuid\" > $stat_cfg_file
+echo "SEND_STAT="\"1\" >> $stat_cfg_file
+sudo chmod 0666 $stat_cfg_file
+else
+source $stat_cfg_file
+source $version_cfg_file
+source $lang_cfg_file
+source $count_zones_int
+source $count_zones_ext
+SLM_ANZAHL_TOTAL=$(echo "$SLM_ANZAHL+$SLM_ANZAHL_EXT" | bc -l)
+
+if [ $UUID == "" ]; then
+uuid=$(ip addr show $IFACE | grep 'link/ether' | tr -s ' ' | cut -d ' ' -f3 | sha256sum | awk '{print $1}')
+echo "UUID="\"$uuid\" > $stat_cfg_file
+echo "SEND_STAT="\"1\" >> $stat_cfg_file
+sudo chmod 0666 $stat_cfg_file
+fi
+
+if [ $SEND_STAT == "1" ];then
+url="https://music-server.net/stat/stat.php?do=write&uuid=$UUID&version=$VERS&lang=$LANG&distro=$distro2&soundcards=$count_soundcards&channels=$count_channels&zones_int=$SLM_ANZAHL&zones_ext=$SLM_ANZAHL_EXT&zones_total=$SLM_ANZAHL_TOTAL"
+#echo $url
+sudo wget -qO- $url
+else
+url="https://music-server.net/stat/stat.php?do=write&uuid=$UUID&version=0&lang=0&distro=0&soundcards=0&channels=0&zones_int=0&zones_ext=0&zones_total=0"
+sudo wget -qO- $url
+fi
+
+fi
+;;
+
+#SYSTEM POWER OFF
+system_off)
+sleep 0.5
+sudo sc autostop
+sudo shutdown --poweroff now
+;;
+
+#SYSTEM REBOOT
+system_reboot)
+sleep 0.5
+sudo sc autostop
+sudo shutdown --reboot now
+;;
+
+#SYSTEM SUSPEND
+system_suspend)
+sleep 0.5
+sudo sc autostop
+sudo systemctl suspend
+;;
+
+#SOUNDCARD SAVE
+soundcard_show)
+sudo cat /proc/asound/cards > /tmp/soundcards.txt
+sed -n '{p;n}' /tmp/soundcards.txt > /var/www/settings/soundcards.txt
+;;
+
+#NETWORK SHOW
+network_show)
+DNS=$(cat /etc/resolv.conf |grep -i '^nameserver'|head -n1|cut -d ' ' -f2)
+HOSTNAME=$( hostname -f)
+IFS='.' read -ra DATA <<< "$HOSTNAME"
+if [ "$raspbian" == 1 ];then
+	IFACE=$(ip -o link show | sed -rn '/^[0-9]+: .*state UP.*/{s/.: ([^:]*):.*/\1/p}')
+else
+	IFACE=$(ip -o link show | sed -rn '/^[0-9]+: en/{s/.: ([^:]*):.*/\1/p}')
+fi
+ALLLOC=$(grep dhcp /etc/network/interfaces | tr -s ' ' | cut -d ' ' -f4 | wc -l)
+if [ $ALLLOC == 1 ]; then
+ALLLOC="dhcp"
+else
+ALLLOC="static"
+fi
+IP=$(ip addr | grep 'state UP' -A2 | tail -n1 | awk '{print $2}' | cut -f1  -d'/')
+if [ $distro == "16" ]; then
+SUBNET=$(ifconfig $IFACE | grep "Bcast:" | tr -s ' ' | cut -d: -f4)
+elif [ $distro == "deb10" ]; then
+SUBNET=$(ifconfig $IFACE | grep "broadcast" | awk '{print $4}')
+elif [ $distro == "rasp10" ]; then
+SUBNET=$(ifconfig $IFACE | grep "broadcast" | awk '{print $4}')
+fi
+GATE=$(ip route show | grep -m 1 'default' | awk '{print $3}')
+MAC=$(ip addr show $IFACE | grep 'link/ether' | tr -s ' ' | cut -d ' ' -f3)
+echo "[Network]"> /var/www/settings/network.conf
+echo "ns_iface=\"$IFACE\"" >> /var/www/settings/network.conf
+echo "ns_kind=\"$ALLLOC\"" >> /var/www/settings/network.conf
+echo "ns_ip=\"$IP\"" >> /var/www/settings/network.conf
+echo "ns_subnet=\"$SUBNET\"" >> /var/www/settings/network.conf
+echo "ns_gateway=\"$GATE\"" >> /var/www/settings/network.conf
+echo "ns_dnsserver=\"$DNS\"" >> /var/www/settings/network.conf
+echo "ns_mac=\"$MAC\"" >> /var/www/settings/network.conf
+echo "ns_hostname=\"${DATA[0]}\"" >> /var/www/settings/network.conf
+echo "ns_hostdomain=\"${DATA[1]}\"" >> /var/www/settings/network.conf
+sudo chmod 0666 /var/www/settings/network.conf
+;;
+
+#NETWORK SET
+network_set)
+LOCNETWORK="/etc/network/interfaces"
+LOCHOSTS="/etc/hosts"
+source /var/www/settings/network.conf
+rm -f $LOCNETWORK
+
+if [ $ALLLOC != dhcp ]; then #select ALLLOC or STATIC mode
+
+echo "######################################################" >> $LOCNETWORK
+echo "## NETWORK SETTINGS CREATE BY MUSICSERVER4LOX" >> $LOCNETWORK
+echo "auto lo" >> $LOCNETWORK
+echo "iface lo inet loopback" >> $LOCNETWORK
+echo "" >> $LOCNETWORK
+echo "auto $IFACE" >> $LOCNETWORK
+echo "iface $IFACE inet static" >> $LOCNETWORK
+echo "address $NEW_IP" >> $LOCNETWORK
+echo "netmask $NEW_SUBNET" >> $LOCNETWORK
+echo "gateway $NEW_GATEWAY" >> $LOCNETWORK
+echo "dns-nameservers $NEW_GATEWAY" >> $LOCNETWORK
+else 	
+echo "######################################################" >> $LOCNETWORK
+echo "## NETWORK SETTINGS CREATE BY MUSICSERVER4LOX" >> $LOCNETWORK
+echo "auto lo" >> $LOCNETWORK
+echo "iface lo inet loopback" >> $LOCNETWORK
+echo "" >> $LOCNETWORK
+echo "auto $IFACE" >> $LOCNETWORK
+echo "iface $IFACE inet dhcp" >> $LOCNETWORK
+fi
+
+echo "######################################################" > $LOCHOSTS
+echo "## NHOSTS FILE CREATE BY MUSICSERVER4LOX" >> $LOCHOSTS
+echo "" >> $LOCHOSTS
+echo "127.0.0.1   localhost" >> $LOCHOSTS
+if [ -z "$NEW_HOSTDOMAIN" ]; then
+echo "$NEW_IP   $NEW_HOSTNAME" >> $LOCHOSTS
+else
+echo "$NEW_IP   $NEW_HOSTNAME.$NEW_HOSTDOMAIN  $NEW_HOSTNAME" >> $LOCHOSTS
+fi
+echo "" >> $LOCHOSTS
+echo "# The following lines are desirable for IPv6 capable hosts" >> $LOCHOSTS
+echo "#::1     localhost ip6-localhost ip6-loopback" >> $LOCHOSTS
+echo "#ff02::1 ip6-allnodes" >> $LOCHOSTS
+echo "#ff02::2 ip6-allrouters" >> $LOCHOSTS
+if [ -z "$NEW_HOSTDOMAIN" ]; then
+echo "$NEW_HOSTNAME" > /etc/hostname
+else
+echo "$NEW_HOSTNAME.$NEW_HOSTDOMAIN" > /etc/hostname
+fi
+sudo chmod 0666 $LOCNETWORK
+;;
+
+#EQ READ SETTINGS
+eq_read)
+eq0=$(amixer -D $2 | grep -A 5 "Simple mixer control '00. 31 Hz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+eq1=$(amixer -D $2 | grep -A 5 "Simple mixer control '01. 63 Hz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+eq2=$(amixer -D $2 | grep -A 5 "Simple mixer control '02. 125 Hz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+eq3=$(amixer -D $2 | grep -A 5 "Simple mixer control '03. 250 Hz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+eq4=$(amixer -D $2 | grep -A 5 "Simple mixer control '04. 500 Hz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+eq5=$(amixer -D $2 | grep -A 5 "Simple mixer control '05. 1 kHz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+eq6=$(amixer -D $2 | grep -A 5 "Simple mixer control '06. 2 kHz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+eq7=$(amixer -D $2 | grep -A 5 "Simple mixer control '07. 4 kHz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+eq8=$(amixer -D $2 | grep -A 5 "Simple mixer control '08. 8 kHz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+eq9=$(amixer -D $2 | grep -A 5 "Simple mixer control '09. 16 kHz',0" | grep  "Front Left: Playback" | awk '{print $4}')
+
+
+rm -f >/tmp/eq_read_$2
+echo $eq0 >> /tmp/eq_read_$2
+echo $eq1 >> /tmp/eq_read_$2
+echo $eq2 >> /tmp/eq_read_$2
+echo $eq3 >> /tmp/eq_read_$2
+echo $eq4 >> /tmp/eq_read_$2
+echo $eq5 >> /tmp/eq_read_$2
+echo $eq6 >> /tmp/eq_read_$2
+echo $eq7 >> /tmp/eq_read_$2
+echo $eq8 >> /tmp/eq_read_$2
+echo $eq9 >> /tmp/eq_read_$2
+
+;;
+
+#LMS READ VERSION
+lms_version)
+lmsup_url_version="http://downloads.slimdevices.com/nightly/?ver=7.9"
+lmsup_temp="/tmp/lms.update"
+versinstall=`dpkg -l | grep "logitechmediaserver" | awk '{print $3}'`
+wget -q -O $lmsup_temp $lmsup_url_version
+versonline=$(grep -A 1 "_all.deb" $lmsup_temp | grep -v grep | cut -c 95- | cut -d"<" -f1 | cut -d"_" -f1 )
+echo "Version online:      "$versonline
+echo "Version installiert: "$versinstall
+rm -f /tmp/lms.version
+echo $versonline > /tmp/lms.version
+echo $versinstall >> /tmp/lms.version
+;;
+lms_version8)
+lmsup_url_version="http://downloads.slimdevices.com/nightly/?ver=8.0"
+lmsup_temp="/tmp/lms8.update"
+sudo rm -rf /tmp/lms8.update
+versinstall8=`dpkg -l | grep "logitechmediaserver" | awk '{print $3}'`
+wget -q -O $lmsup_temp $lmsup_url_version
+versonline8=$(grep -A 1 "_all.deb" $lmsup_temp | grep -v grep | cut -c 96- | cut -d"<" -f1 | cut -d"\"" -f1 | cut -d"_" -f1 )
+echo "Version online:      "$versonline8
+echo "Version installiert: "$versinstall8
+echo $versonline8 > /tmp/lms8.version
+echo $versinstall8 >> /tmp/lms8.version
+;;
+
+#LMS UPDATE
+update_lms)
+sudo rm -f /var/www/system/log/update_lms_out.txt
+lmsup_url_version="http://downloads.slimdevices.com/nightly/?ver=7.9"
+lmsup_temp="/tmp/lms.update"
+wget -q -O $lmsup_temp $lmsup_url_version
+lmsup_version=$(grep -A 1 "_all.deb" $lmsup_temp | grep -v grep | cut -c 95- | cut -d"<" -f1 | cut -d"_" -f1 | cut -d"~" -f1 )
+versonline=$(grep -A 1 "_all.deb" $lmsup_temp | grep -v grep | cut -c 95- | cut -d"<" -f1 | cut -d"_" -f1 )
+lmsup_url="http://www.mysqueezebox.com/update/?version=$lmsup_version&revision=1&geturl=1&os=deb"
+if [ "$raspbian" == 1 ];then
+	lmsup_url=$lmsup_url"arm"
+fi
+echo "Squeezeboxserver | UPDATE"
+echo "================================"
+echo "Version online:      "$versonline
+echo "------------------------------------------------"
+echo "Server / Player STOP"
+sudo sc autostop >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "Download LMS"
+cd /tmp
+latest_lms=$(wget -q -O - "$lmsup_url")
+mkdir -p /tmp/lms_sources
+cd /tmp/lms_sources
+wget $latest_lms
+lms_deb=${latest_lms##*/}
+echo "------------------------------------------------"
+echo "Install LMS"
+sudo dpkg -i $lms_deb
+sudo update-rc.d -f logitechmediaserver disable
+sudo rm -f /etc/init.d/logitechmediaserver
+sudo rm -rf /tmp/lms_sources/*.*
+sudo rm -rf /tmp/lms_sources
+echo "------------------------------------------------"
+echo "Server / Player RESTART"
+sudo sc autostart >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "------------------------------------------------"
+echo "SUCCESSFULLY UPDATED!"
+echo "------------------------------------------------"
+sudo cp -f /tmp/update_lms_out.txt /var/www/system/log/update_lms_out.txt
+sudo chmod 0666 /var/www/system/log/update_lms_out.txt
+;;
+
+#LMS UPDATE
+update_lms8)
+sudo rm -f /var/www/system/log/update_lms_out.txt
+lmsup_url_version="http://downloads.slimdevices.com/nightly/?ver=8.0"
+lmsup_temp="/tmp/lms.update"
+wget -q -O $lmsup_temp $lmsup_url_version
+lmsup_version=$(grep -A 1 "_all.deb" $lmsup_temp | grep -v grep | cut -c 96- | cut -d"<" -f1 | cut -d"\"" -f1 )
+lmsup_url="http://www.mysqueezebox.com/update/?version=$lmsup_version&revision=1&geturl=1&os=deb"
+versonline=$(grep -A 1 "_all.deb" $lmsup_temp | grep -v grep | cut -c 96- | cut -d"<" -f1 | cut -d"\"" -f1 | cut -d"_" -f1 )
+echo "Squeezeboxserver | UPDATE"
+echo "================================"
+echo "Version online:      "$versonline
+echo "------------------------------------------------"
+echo "Server / Player STOP"
+sudo sc autostop >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "Download LMS"
+cd /tmp
+latest_lms=$(wget -q -O - "$lmsup_url")
+mkdir -p /tmp/lms_sources
+cd /tmp/lms_sources
+wget $latest_lms
+lms_deb=${latest_lms##*/}
+echo "------------------------------------------------"
+echo "Install LMS"
+sudo dpkg -i $lms_deb
+sudo update-rc.d -f logitechmediaserver disable
+sudo rm -f /etc/init.d/logitechmediaserver
+sudo rm -rf /tmp/lms_sources
+echo "------------------------------------------------"
+echo "Server / Player RESTART"
+sudo sc autostart >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "------------------------------------------------"
+echo "SUCCESSFULLY UPDATED!"
+echo "------------------------------------------------"
+sudo cp -f /tmp/update_lms_out.txt /var/www/system/log/update_lms_out.txt
+sudo chmod 0666 /var/www/system/log/update_lms_out.txt
+;;						  
+
+#SQUEEZELITE READ VERSION
+sq_version)
+
+squp_url_version="https://raw.githubusercontent.com/ralph-irving/squeezelite/master/squeezelite.h"
+
+wget -t 5 -q -O /tmp/sqo.version $squp_url_version
+versonline0=$(grep "#define MAJOR_VERSION" /tmp/sqo.version | awk '{print $3}' | sed 's/\"/ /g' | sed 's/ //g' )
+versonline1=$(grep "#define MINOR_VERSION" /tmp/sqo.version | awk '{print $3}' | sed 's/\"/ /g' | sed 's/ //g' )
+versonline2=$(grep "#define MICRO_VERSION" /tmp/sqo.version | awk '{print $3}' | sed 's/\"/ /g' | sed 's/ //g' )
+versonline=$(echo "$versonline0.$versonline1-$versonline2")
+versinstall=`squeezelite -? | grep "Squeezelite v" | awk '{print $2}' | cut -d "v" -f2 | cut -d "," -f1`
+echo "Version online:      "$versonline
+echo "Version installiert: "$versinstall
+
+rm -f /tmp/sq.version
+echo $versonline >> /tmp/sq.version
+echo $versinstall >> /tmp/sq.version
+;;
+
+#SQUEEZELITE UPDATE
+update_squeezelite)
+squp_url="https://github.com/ralph-irving/squeezelite/"
+squp_url_version="https://raw.githubusercontent.com/ralph-irving/squeezelite/master/squeezelite.h"
+sudo rm -f /var/www/system/log/update_sq_out.txt
+dir="`mktemp --directory`"
+cd "$dir"
+wget -t 5 -q -O /tmp/sqo.version $squp_url_version
+versonline0=$(grep "#define MAJOR_VERSION" /tmp/sqo.version | awk '{print $3}' | sed 's/\"/ /g' | sed 's/ //g' )
+versonline1=$(grep "#define MINOR_VERSION" /tmp/sqo.version | awk '{print $3}' | sed 's/\"/ /g' | sed 's/ //g' )
+versonline2=$(grep "#define MICRO_VERSION" /tmp/sqo.version | awk '{print $3}' | sed 's/\"/ /g' | sed 's/ //g' )
+versonline=$(echo "$versonline0.$versonline1-$versonline2")
+echo "Squeezelite | UPDATE"
+echo "================================"
+echo "Version online:      "$versonline
+echo "------------------------------------------------"
+echo "Player STOP"
+sudo sc player all stop >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "Download Squeezelite"
+git clone $squp_url
+cd squeezelite
+echo "------------------------------------------------"
+echo "Compile Squeezelite"
+CORES=$(grep ^processor /proc/cpuinfo | wc -l)
+make -j$CORES
+echo "------------------------------------------------"
+echo "Set Files"
+sudo cp -f squeezelite /usr/bin/squeezelite-$version_online
+sudo ln -f /usr/bin/squeezelite-$version_online /usr/bin/squeezelite
+sudo update-rc.d squeezelite disable
+echo "------------------------------------------------"
+echo "Server / Player RESTART"
+sudo sc player all start >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "------------------------------------------------"
+echo "SUCCESSFULLY UPDATED!"
+echo "------------------------------------------------"
+sudo cp -f /tmp/update_sq_out.txt /var/www/system/log/update_sq_out.txt
+sudo chmod 0666 /var/www/system/log/update_sq_out.txt
+;;
+
+#SYSTEMUPDATE COUNT
+sys_ups)
+apt update
+var1=$(apt-get -q -y --ignore-hold --allow-change-held-packages --allow-unauthenticated -s dist-upgrade | /bin/grep  ^Inst | wc -l) 
+rm -f /tmp/sys.update
+echo $var1 >> /tmp/sys.update
+;;
+
+#ms4l version 
+ms4l_version)
+source "/opt/music_server/sq_cfg/sq_version.cfg"		
+ms4lup_url_version="music-server.net/download/update/version"
+wget -t 5 -q -O /tmp/ms4lo.version $ms4lup_url_version	
+ms4l_versonline=$(cat /tmp/ms4lo.version)
+ms4l_versinstall=$VERS
+rm -f /tmp/ms4l.version
+echo $ms4l_versonline >> /tmp/ms4l.version
+echo $ms4l_versinstall >> /tmp/ms4l.version
+;;
+
+#UPDATE SYSTEM
+update_system)
+sudo rm -f /var/www/system/log/update_system_out.txt
+echo "SYSTEM | UPDATE"
+echo "================================"
+echo "Pakage-List update..."
+sudo apt-get update
+echo "------------------------------------------------"
+echo "Pakage upgraden..."
+sudo apt-get -f -y dist-upgrade
+echo "------------------------------------------------"
+echo "Nicht mehr benötigte Pakete werden gelöscht..."
+apt-get -y autoremove
+echo "------------------------------------------------"
+echo "Cleanup expired Pakages..."
+apt-get -y clean
+echo "------------------------------------------------"
+echo "SUCCESSFULLY UPDATED!"
+echo "------------------------------------------------"
+sudo cp -f /tmp/update_system_out.txt /var/www/system/log/update_system_out.txt
+sudo chmod 0666 /var/www/system/log/update_system_out.txt
+;;
+
+#ms4l version 
+ms4l_version)
+source "/opt/music_server/sq_cfg/sq_version.cfg"		
+ms4lup_url_version="music-server.net/download/update/version"
+wget -t 5 -q -O /tmp/ms4lo.version $ms4lup_url_version	
+ms4l_versonline=$(cat /tmp/ms4lo.version)
+ms4l_versinstall=$VERS
+rm -f /tmp/ms4l.version
+echo $ms4l_versonline >> /tmp/ms4l.version
+echo $ms4l_versinstall >> /tmp/ms4l.version
+;;
+
+#UPDATE MUSICSERVER
+update_ms)
+tmpdir="/tmp/musicserver"
+ms_url_version="http://music-server.net/download/update/version"
+sudo rm -f /var/www/system/log/update_ms_out.txt
+echo "Musik-Server | UPDATE"
+echo "================================"
+sudo wget -t 5 -q -O /tmp/ms.version $ms_url_version
+versonline=`cat /tmp/ms.version`
+echo "Version online:      "$versonline
+echo "------------------------------------------------"
+
+echo "Server / Player / PM /SQ2LOX STOP"
+sudo sc autostop >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "Download Files"
+cd /tmp
+sudo rm -rf $tmpdir
+sudo rm -rf /tmp/update_$versonline.zip
+sudo wget -t 5 -q http://music-server.net/download/update/update_$versonline.zip
+echo "------------------------------------------------"
+echo "Unzip Files "
+sudo unzip -q -d $tmpdir /tmp/update_$versonline.zip
+echo "------------------------------------------------"
+echo "Pre-Update-Script"
+if [ -f $tmpdir/pre.sh ] ; then
+sudo chmod 0755 $tmpdir/pre.sh
+sudo bash $tmpdir/pre.sh
+else 
+echo "not used..."
+fi
+echo "------------------------------------------------"
+echo "Copy Files..."
+if [ -d $tmpdir/etc/ ] ; then 
+echo ".../etc/..."
+sudo cp -f -r $tmpdir/etc/ /
+fi
+if [ -d $tmpdir/opt/ ] ; then 
+echo ".../opt/..."
+sudo cp -f -r $tmpdir/opt/ /
+fi
+if [ -d $tmpdir/var/ ] ; then 
+echo ".../www/..."
+sudo cp -f -r $tmpdir/var/www/ /var/
+fi
+echo "------------------------------------------------"
+echo "Set File Permissions..."
+echo "for System Scripts.."
+sudo chmod 0755 /opt/music_server/*
+echo "for CONFIG..."
+sudo chmod 0666 /opt/music_server/sq_cfg/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/
+sudo chmod 0777 /opt/music_server/sq_cfg/
+sudo chmod 0777 /opt/music_server/sq_cfg/event/
+sudo chmod 0777 /opt/music_server/sq_cfg/eq/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones_ext/
+sudo chmod 0666 /opt/music_server/sq_cfg/event/*.*
+sudo chmod 0666 /opt/music_server/sq_cfg/zones/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/defaultcard/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/multicard/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/zones/
+sudo chmod 0666 /opt/music_server/soundcard_cfg/zones/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/*.*
+sudo chmod 0777 /opt/music_server/tools/
+sudo chmod 0755 /opt/music_server/tools/*.*
+sudo chmod 0777 /opt/music_server/msg/
+sudo chmod 0755 /opt/music_server/msg/msg.sh
+echo "for WWW..."
+sudo chmod 0777 /var/www/event/tts_tmp/
+sudo chmod 0777 /var/www/event/ringtones/
+sudo chmod 0777 /var/www/event/ringtones/tts_signal/
+sudo chmod 0666 /var/www/settings/network.conf
+sudo chmod 0666 /var/www/settings/soundcards.txt
+echo "for ALSA..."
+sudo chmod 0666 /etc/asound.conf
+echo "for NETWORK SETTING..."
+sudo chmod 0666 /etc/network/interfaces
+echo "------------------------------------------------"
+echo "Create Soft-Links..."
+sudo ln -f /opt/music_server/sc /bin/sc
+echo "------------------------------------------------"
+echo "After-Update-Script"
+if [ -f $tmpdir/after.sh ] ; then
+sudo chmod 0755 $tmpdir/after.sh
+sudo bash $tmpdir/after.sh
+else 
+echo "not used..."
+fi
+echo "------------------------------------------------"
+echo "MusicServer cleanup"
+sudo rm -rf /tmp/update_$versonline.zip
+sudo rm -rf /tmp/musicserver/*.*
+sudo rm -rf /tmp/musicserver/
+echo "------------------------------------------------"
+echo "Server / Player / PM /SQ2LOX RESTART"
+sudo sc autostart >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "------------------------------------------------"
+echo "SUCCESSFULLY UPDATED!"
+echo "------------------------------------------------"
+echo VERS=\"$versonline\" > /opt/music_server/sq_cfg/sq_version.cfg 
+sudo cp -f /tmp/update_ms_out.txt /var/www/system/log/update_ms_out.txt
+sudo chmod 0666 /var/www/system/log/update_ms_out.txt
+sudo mstools send_stat
+;;
+
+
+update_ms_beta)
+tmpdir="/tmp/musicserver"
+ms_url_version="http://music-server.net/download/update/version_beta"
+echo "Musik-Server | UPDATE"
+echo "================================"
+sudo wget -t 5 -q -O /tmp/ms.version $ms_url_version
+versonline=`cat /tmp/ms.version`
+echo "Version online:      "$versonline
+echo "------------------------------------------------"
+
+echo "Server / Player / PM /SQ2LOX STOP"
+sudo sc autostop >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "Download Files"
+cd /tmp
+sudo rm -rf $tmpdir
+sudo rm -rf /tmp/update_$versonline.zip
+sudo wget -t 5 -q http://music-server.net/download/update/update_$versonline.zip
+echo "------------------------------------------------"
+echo "Unzip Files "
+sudo unzip -q -d $tmpdir /tmp/update_$versonline.zip
+echo "------------------------------------------------"
+echo "Pre-Update-Script"
+if [ -f $tmpdir/pre.sh ] ; then
+sudo chmod 0755 $tmpdir/pre.sh
+sudo bash $tmpdir/pre.sh
+else 
+echo "not used..."
+fi
+echo "------------------------------------------------"
+echo "Copy Files..."
+if [ -d $tmpdir/etc/ ] ; then 
+echo ".../etc/..."
+sudo cp -f -r $tmpdir/etc/ /
+fi
+if [ -d $tmpdir/opt/ ] ; then 
+echo ".../opt/..."
+sudo cp -f -r $tmpdir/opt/ /
+fi
+if [ -d $tmpdir/var/ ] ; then 
+echo ".../www/..."
+sudo cp -f -r $tmpdir/var/www/ /var/
+fi
+echo "------------------------------------------------"
+echo "Set File Permissions..."
+echo "for System Scripts.."
+sudo chmod 0755 /opt/music_server/*
+echo "for CONFIG..."
+sudo chmod 0666 /opt/music_server/sq_cfg/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/
+sudo chmod 0777 /opt/music_server/sq_cfg/
+sudo chmod 0777 /opt/music_server/tools/
+sudo chmod 0755 /opt/music_server/tools/*.*
+sudo chmod 0777 /opt/music_server/sq_fav
+sudo chmod 0666 /opt/music_server/sq_cfg/*.*
+sudo chmod 0777 /opt/music_server/sq_cfg/event/
+sudo chmod 0666 /opt/music_server/sq_cfg/event/*.*
+sudo chmod 0777 /opt/music_server/sq_cfg/eq/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones_ext/
+sudo chmod 0666 /opt/music_server/soundcard_cfg/defaultcard/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/multicard/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/zones/
+sudo chmod 0666 /opt/music_server/soundcard_cfg/*.*
+sudo chmod 0777 /opt/music_server/t5_cmd/
+sudo chmod 0777 /opt/music_server/msg/
+sudo chmod 0755 /opt/music_server/msg/msg.sh
+echo "for WWW..."
+sudo chmod 0777 /var/www/event/tts_tmp/
+sudo chmod 0777 /var/www/event/ringtones/
+sudo chmod 0777 /var/www/event/ringtones/tts_signal/
+sudo chmod 0666 /var/www/settings/network.conf
+sudo chmod 0666 /var/www/settings/soundcards.txt
+echo "for ALSA..."
+sudo chmod 0666 /etc/asound.conf
+echo "for NETWORK SETTING..."
+sudo chmod 0666 /etc/network/interfaces
+echo "------------------------------------------------"
+echo "Create Soft-Links..."
+sudo ln -f /opt/music_server/sc /bin/sc
+echo "------------------------------------------------"
+echo "After-Update-Script"
+if [ -f $tmpdir/after.sh ] ; then
+sudo chmod 0755 $tmpdir/after.sh
+sudo bash $tmpdir/after.sh
+else 
+echo "not used..."
+fi
+echo "------------------------------------------------"
+echo "MusicServer cleanup"
+sudo rm -rf /tmp/update_$versonline.zip
+sudo rm -rf /tmp/musicserver/*.*
+sudo rm -rf /tmp/musicserver/
+echo "------------------------------------------------"
+echo "Server / Player / PM /SQ2LOX RESTART"
+sudo sc autostart >/dev/null 2>&1
+echo "OK..."
+echo "------------------------------------------------"
+echo "------------------------------------------------"
+echo "SUCCESSFULLY UPDATED!"
+echo "------------------------------------------------"
+sudo mstools send_stat
+echo VERS=\"$versonline\" > /opt/music_server/sq_cfg/sq_version.cfg 
+;;
+
+reset_settings)
+source /opt/music_server/sq_cfg/sq_version.cfg
+tmpdir="/tmp/musicserver"
+sudo wget -t 5 -O /tmp/reset_settings.zip http://music-server.net/download/reset_settings.zip
+sudo unzip -q -d $tmpdir /tmp/reset_settings.zip
+
+rm -rf /opt/music_server/soundcard_cfg
+rm -rf /opt/music_server/sq_cfg
+rm -rf /opt/music_server/sq_fav
+rm -rf /opt/music_server/t5_cmd
+rm -rf /var/www/event/tts_tmp
+
+if [ -d $tmpdir/etc/ ] ; then 
+sudo cp -f -r $tmpdir/etc/ /
+fi
+if [ -d $tmpdir/opt/ ] ; then 
+sudo cp -f -r $tmpdir/opt/ /
+fi
+if [ -d $tmpdir/var/ ] ; then 
+sudo cp -f -r $tmpdir/var/www/ /var/
+fi
+sudo chmod 0777 /opt/music_server/tools/
+sudo chmod 0755 /opt/music_server/tools/*.*
+sudo chmod 0666 /opt/music_server/sq_cfg/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/
+sudo chmod 0777 /opt/music_server/sq_cfg/
+sudo chmod 0777 /opt/music_server/sq_cfg/event/
+sudo chmod 0777 /opt/music_server/sq_cfg/eq/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones_ext/
+sudo chmod 0666 /opt/music_server/sq_cfg/event/*.*
+sudo chmod 0666 /opt/music_server/sq_cfg/zones/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/defaultcard/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/multicard/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/zones/
+sudo chmod 0666 /opt/music_server/soundcard_cfg/*.*
+sudo chmod 0777 /var/www/event/tts_tmp/
+sudo chmod 0777 /var/www/event/ringtones/
+sudo chmod 0777 /var/www/event/ringtones/tts_signal/
+sudo chmod 0666 /var/www/settings/network.conf
+sudo chmod 0666 /var/www/settings/soundcards.txt
+sudo chmod 0666 /etc/asound.conf
+sudo chmod 0777 /opt/music_server/msg/
+sudo chmod 0755 /opt/music_server/msg/msg.sh
+
+sudo rm -rf /tmp/reset_settings.zip
+sudo rm -rf /tmp/musicserver/*.*
+sudo rm -rf /tmp/musicserver/
+echo VERS=\"$VERS\" > /opt/music_server/sq_cfg/sq_version.cfg 
+sudo reboot
+;;															  
+
+# LMS VALs TO CFG FILE
+set_lms_ip)
+source "/opt/music_server/sq_cfg/sq_lms.cfg"
+ip=$(ip addr | grep 'state UP' -A2 | tail -n1 | awk '{print $2}' | cut -f1  -d'/')
+echo "LMS_IP"=\"$ip\" > /opt/music_server/sq_cfg/sq_lms.cfg
+echo "LMS_WEB_PORT"=\"$LMS_WEB_PORT\" >> /opt/music_server/sq_cfg/sq_lms.cfg
+echo "LMS_TELNET_PORT"=\"$LMS_TELNET_PORT\" >> /opt/music_server/sq_cfg/sq_lms.cfg
+echo "LMS_8"=\"$LMS_8\" >> /opt/music_server/sq_cfg/sq_lms.cfg
+;;
+
+set_lms_cliport)
+getportcli=$(sed -n '/^cliport:/p'  /var/lib/squeezeboxserver/prefs/plugin/cli.prefs | awk '{print $2}')
+sed -i "/_ts_/!s/cliport: $getportcli/cliport: $2/" /var/lib/squeezeboxserver/prefs/plugin/cli.prefs
+;;
+
+set_lms_httpport)
+getporthttp=$(sed -n '/^httpport:/p'  /var/lib/squeezeboxserver/prefs/server.prefs | awk '{print $2}')
+sed -i "/_ts_/!s/httpport: $getporthttp/httpport: $2/" /var/lib/squeezeboxserver/prefs/server.prefs
+;;
+
+set_lms_boot)
+source "/opt/music_server/sq_cfg/sq_lms.cfg"
+ip=$(ifconfig | head -n 2 | tail -n 1 | cut -d: -f2 | cut -d" " -f 1)
+getporthttp=$(sed -n '/^httpport:/p'  /var/lib/squeezeboxserver/prefs/server.prefs | awk '{print $2}')
+getportcli=$(sed -n '/^cliport:/p'  /var/lib/squeezeboxserver/prefs/plugin/cli.prefs | awk '{print $2}')
+echo "LMS_AUTOSTART"=\"$LMS_AUTOSTART\" > /opt/music_server/sq_cfg/sq_lms.cfg
+echo "LMS_IP"=\"$ip\" >> /opt/music_server/sq_cfg/sq_lms.cfg
+echo "LMS_WEB_PORT"=\"$getporthttp\" >> /opt/music_server/sq_cfg/sq_lms.cfg
+echo "LMS_TELNET_PORT"=\"$getportcli\" >> /opt/music_server/sq_cfg/sq_lms.cfg
+;;
+
+#READ PLAYER
+read_player)
+# Config-Files - Read
+source "/opt/music_server/sq_cfg/sq_lms.cfg"
+source "/opt/music_server/sq_cfg/sq_lox.cfg"
+source "/opt/music_server/sq_cfg/sq_pm.cfg"
+source "/opt/music_server/sq_cfg/sq_sq2lox.cfg"
+source "/opt/music_server/sq_cfg/sq_zones.cfg"
+
+cd /tmp/
+if [ -f /tmp/ext_player.cfg ] ; then 
+sudo rm -rf /tmp/status.html
+sudo rm -rf /tmp/ext_player.cfg
+fi
+sudo wget -q -t 5 -O /tmp/status.html $LMS_IP:$LMS_WEB_PORT/status.html?player=aa%3Abb%3Acc%3Add%3Aee%3A01
+read=$(cat /tmp/status.html | grep "value=\".*</option>" | sed -e "s/value=\(.*\)<\/option>/\1/" | awk -F"</select" '{print $1}' | sed -e 's/  */_/g' | sed 's/\"//g' | sed -e 's/>/ /g' | sed -e 's/<option_/ /g' | sed -e 's/selected_/ /g' )
+array_read=($read)
+count=${#array_read[@]}
+if [ -f /tmp/ext_player.cfg ] ; then 
+sudo rm -rf /tmp/ext_player.cfg
+fi
+i=0
+ii=0
+count=$[count-1]
+while [ $i -le $count ]
+do
+player_tmp=$(echo ${array_read[$i+1]} | sed 's/[()]//g')
+echo "SLM_EXT_NAME["$ii"]=\""$player_tmp"\"" >> /tmp/ext_player.cfg
+echo "SLM_EXT_MAC_ADDRESS["$ii"]=\""${array_read[$i]}"\"" >> /tmp/ext_player.cfg
+ii=`expr $ii + 1`
+i=`expr $i + 2`
+done
+;;
+
+#READ AMP STATE
+read_amp_state)
+source "/opt/music_server/sq_cfg/sq_lms.cfg"
+source "/opt/music_server/sq_cfg/sq_lox.cfg"
+source "/opt/music_server/sq_cfg/sq_pm.cfg"
+source "/opt/music_server/sq_cfg/sq_sq2lox.cfg"
+source "/opt/music_server/sq_cfg/sq_zones.cfg"
+
+i="1"
+while [ $i -le $SLM_ANZAHL ]
+do
+# Player-Config-Files - Read
+if [ $i -le "9" ]; then
+source "/opt/music_server/sq_cfg/zones/sq_zone_0"$i".cfg"
+elif [ $i -ge "10" ]; then
+source "/opt/music_server/sq_cfg/zones/sq_zone_"$i".cfg"
+fi
+i=`expr $i + 1`
+done
+timeout="10"
+loxstatus=$(wget -4 -q -O - --user $LOX_USER --password $LOX_PASS http://$LOX_IP/dev/sps/io/VI$2/state | awk '{print $3}' | sed '1,1d'  | cut -d"\"" -f2)
+if $(echo $loxstatus | grep -q '^[0-9]\+$'); then 
+loxstatus=$loxstatus
+else
+loxstatus="0"
+fi	
+;;
+
+#Backup Music-Server
+backup_ms)
+source "/opt/music_server/sq_cfg/sq_version.cfg"
+desdir="/home/music/backup/Music_Server"
+srcdir="/var/www /opt/music_server /etc/rc.local /etc/asound.conf /etc/sudoers /etc/network/interfaces /etc/apache2/sites-enabled/000-default.conf /etc/samba/smb.conf"
+if ! [ -d $desdir ] ; then
+sudo mkdir -p $desdir
+sudo chown -c music $desdir
+sudo chmod 0777 $desdir
+fi
+echo "Backup Music-Server-Files..."
+time=`date +%d%m%y_%H%M%S`
+filename="MS_Backup_$VERS"_"$time.zip"
+sudo zip -r -qdgds 100k $desdir/$filename $srcdir
+echo 
+echo "Backuped to: $desdir/$filename"
+echo
+echo "Backup SUCCESFULLY"
+sudo cp -f /tmp/backup_ms_out.txt /var/www/system/log/backup_ms_out.txt
+sudo chmod 0666 /var/www/system/log/backup_ms_out.txt
+;;
+
+#Restore Music-Server
+restore_ms)
+srcdir="/home/music/backup/Music_Server"
+desdir="/tmp/restore_ms" 
+filename=$2
+if [ -d $desdir ] ; then
+rm -rf $desdir
+fi
+echo "LMS/PLAYER... STOP"
+sudo sc autostop >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Restore Playlist-Files..."
+echo
+echo "Unzip Files "$filename" to "$desdir
+sudo unzip -q -o -d $desdir $srcdir/$filename
+echo "Copy Files to "$srcdir
+sudo cp -v -f -r $desdir/etc/ /
+sudo cp -v -f -r $desdir/opt/ /
+sudo cp -v -f -r $desdir/var/www/ /var/
+echo
+echo "Set File Permissions..."
+echo "for System Scripts.."
+sudo chmod 0755 /opt/music_server/*.*
+echo "for CONFIG..."
+sudo chmod 0777 /opt/music_server/tools/
+sudo chmod 0755 /opt/music_server/tools/*.*
+sudo chmod 0666 /opt/music_server/sq_cfg/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/
+sudo chmod 0777 /opt/music_server/sq_cfg/
+sudo chmod 0777 /opt/music_server/sq_cfg/event/
+sudo chmod 0777 /opt/music_server/sq_cfg/eq/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones_ext/
+sudo chmod 0666 /opt/music_server/sq_cfg/event/*.*
+sudo chmod 0666 /opt/music_server/sq_cfg/zones/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/defaultcard/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/multicard/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/zones/
+sudo chmod 0666 /opt/music_server/soundcard_cfg/zones/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/*.*
+sudo chmod 0777 /opt/music_server/msg/
+sudo chmod 0755 /opt/music_server/msg/msg.sh
+echo "for WWW..."
+sudo chmod 0777 /var/www/event/cts_tmp/
+sudo chmod 0777 /var/www/event/tts_tmp/
+sudo chmod 0777 /var/www/event/ringtones/
+sudo chmod 0777 /var/www/event/ringtones/tts_signal/
+sudo chmod 0666 /var/www/settings/network.conf
+sudo chmod 0666 /var/www/settings/soundcards.txt
+echo "for ALSA..."
+sudo chmod 0666 /etc/asound.conf
+echo "for NETWORK SETTING..."
+sudo chmod 0666 /etc/network/interfaces
+echo
+echo "LMS/PLAYER... START"
+sudo sc autostart >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Cleanup..."
+rm -rf $desdir
+echo
+echo "Restore SUCCESFULLY"
+echo "System REBOOT required!!!"
+sudo cp -f /tmp/restore_ms_out.txt /var/www/system/log/restore_ms_out.txt
+sudo chmod 0666 /var/www/system/log/restore_ms_out.txt
+;;
+
+#Backup Music-Server
+backup_ms_set)
+source "/opt/music_server/sq_cfg/sq_version.cfg"
+desdir="/home/music/backup/Music_Server_Settings"
+srcdir="/opt/music_server/soundcard_cfg /var/www/settings/network.conf /var/www/settings/soundcards.txt /opt/music_server/sq_cfg /etc/apache2/sites-enabled/000-default.conf /etc/samba/smb.conf"
+if ! [ -d $desdir ] ; then
+sudo mkdir -p $desdir
+sudo chown -c music $desdir
+sudo chmod 0777 $desdir
+fi
+echo "Backup Music-Server-Settings..."
+time=`date +%d%m%y_%H%M%S`
+filename="MS_Backup_Settings_$VERS"_"$time.zip"
+sudo zip -r -qdgds 100k $desdir/$filename $srcdir
+echo 
+echo "Backuped to: $desdir/$filename"
+echo
+echo "Backup SUCCESFULLY"
+sudo cp -f /tmp/backup_ms_set_out.txt /var/www/system/log/backup_ms_set_out.txt
+sudo chmod 0666 /var/www/system/log/backup_ms_set_out.txt
+;;
+
+#Restore Music-Server
+restore_ms_set)
+srcdir="/home/music/backup/Music_Server_Settings"
+desdir="/tmp/restore_ms_settings" 
+filename=$2
+if [ -d $desdir ] ; then
+rm -rf $desdir
+fi
+echo "LMS/PLAYER... STOP"
+sudo sc autostop >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Restore Playlist-Files..."
+echo
+echo "Unzip Files "$filename" to "$desdir
+sudo unzip -q -o -d $desdir $srcdir/$filename
+echo "Copy Files to "$srcdir
+sudo cp -v -f -r $desdir/etc/ /
+sudo cp -v -f -r $desdir/opt/ /
+sudo cp -v -f -r $desdir/var/www/ /var/
+echo 
+echo "Set File Permissions..."
+echo "for CONFIG..."
+sudo chmod 0777 /opt/music_server/tools/
+sudo chmod 0755 /opt/music_server/tools/*.*
+sudo chmod 0666 /opt/music_server/sq_cfg/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/
+sudo chmod 0777 /opt/music_server/sq_cfg/
+sudo chmod 0777 /opt/music_server/sq_cfg/event/
+sudo chmod 0777 /opt/music_server/sq_cfg/eq/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones/
+sudo chmod 0777 /opt/music_server/sq_cfg/zones_ext/
+sudo chmod 0666 /opt/music_server/sq_cfg/event/*.*
+sudo chmod 0666 /opt/music_server/sq_cfg/zones/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/defaultcard/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/multicard/*.*
+sudo chmod 0777 /opt/music_server/soundcard_cfg/zones/
+sudo chmod 0666 /opt/music_server/soundcard_cfg/zones/*.*
+sudo chmod 0666 /opt/music_server/soundcard_cfg/*.*
+sudo chmod 0777 /opt/music_server/msg/
+sudo chmod 0755 /opt/music_server/msg/msg.sh
+echo "for WWW..."
+sudo chmod 0666 /var/www/settings/network.conf
+sudo chmod 0666 /var/www/settings/soundcards.txt
+echo "for ALSA..."
+sudo chmod 0666 /etc/asound.conf
+echo
+echo "LMS/PLAYER... START"
+sudo sc autostart >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Cleanup..."
+rm -rf $desdir
+echo
+echo "Restore SUCCESFULLY"
+echo "System REBOOT required!!!"
+
+sudo cp -f /tmp/restore_ms_set_out.txt /var/www/system/log/restore_ms_set_out.txt
+sudo chmod 0666 /var/www/system/log/restore_ms_set_out.txt
+;;
+
+#Backup LMS
+backup_lms)
+desdir="/home/music/backup/LMS"
+srcdir="/var/lib/squeezeboxserver /var/lib/squeezeboxserver"
+if ! [ -d $desdir ] ; then
+sudo mkdir -p $desdir
+sudo chown -c music $desdir
+sudo chmod 0777 $desdir
+fi
+echo "Backup Favorite-Files..."
+time=`date +%d%m%y_%H%M%S`
+filename="LMS_Backup"_"$time.zip"
+sudo zip -r -qdgds 32k $desdir/$filename $srcdir
+echo 
+echo "Backuped to: $desdir/$filename"
+echo
+echo "Backup SUCCESFULLY"
+sudo cp -f /tmp/backup_lms_out.txt /var/www/system/log/backup_lms_out.txt
+sudo chmod 0666 /var/www/system/log/backup_lms_out.txt
+;;
+
+#Restore LMS
+restore_lms)
+srcdir="/home/music/backup/LMS"
+desdir="/tmp/restore_lms"
+targdir="/var/lib/squeezeboxserver/"
+filename=$2
+if [ -d $desdir ] ; then
+rm -rf $desdir
+fi
+echo "LMS/PLAYER... STOP"
+sudo sc autostop >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Restore Playlist-Files..."
+echo
+echo "Unzip Files "$filename" to "$desdir
+sudo unzip -q -o -d $desdir $srcdir/$filename
+echo "Copy Files to "$srcdir
+sudo cp -f -r $desdir/var /
+echo
+echo "LMS/PLAYER... START"
+sudo sc autostart >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Cleanup..."
+rm -rf $desdir
+echo
+echo "Restore SUCCESFULLY"
+sudo cp -f /tmp/restore_lms_out.txt /var/www/system/log/restore_lms_out.txt
+sudo chmod 0666 /var/www/system/log/restore_lms_out.txt
+;;
+
+#Backup LMS Favoriten
+backup_lms_fav)
+desdir="/home/music/backup/LMS_Fav"
+srcdir="/var/lib/squeezeboxserver/prefs/favorites.opml /var/lib/squeezeboxserver/prefs/favorites.opml.backup"
+if ! [ -d $desdir ] ; then
+sudo mkdir -p $desdir
+sudo chown -c music $desdir
+sudo chmod 0777 $desdir
+fi
+echo "Backup Favorite-Files..."
+time=`date +%d%m%y_%H%M%S`
+filename="LMS_Fav_Backup"_"$time.zip"
+sudo zip -r -qdgds 32k $desdir/$filename $srcdir
+echo 
+echo "Backuped to: $desdir/$filename"
+echo
+echo "Backup SUCCESFULLY"
+sudo cp -f /tmp/backup_lms_fav_out.txt /var/www/system/log/backup_lms_fav_out.txt
+sudo chmod 0666 /var/www/system/log/backup_lms_fav_out.txt
+;;
+
+#Restore LMS Favorits
+restore_lms_fav)
+srcdir="/home/music/backup/LMS_Fav"
+desdir="/tmp/restore_lms_fav"
+targdir="/var/lib/squeezeboxserver/prefs"
+filename=$2
+if [ -d $desdir ] ; then
+rm -rf $desdir
+fi
+echo "LMS/PLAYER... STOP"
+sudo sc autostop >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Restore Playlist-Files..."
+echo
+echo "Unzip Files "$filename" to "$desdir
+sudo unzip -q -o -d $desdir $srcdir/$filename
+echo "Copy Files to "$srcdir
+sudo cp -f -r $desdir/var /
+sudo chown -cR squeezeboxserver:plugdev $targdir/favorites.opml >/dev/null 2>&1
+echo
+echo "LMS/PLAYER... START"
+sudo sc autostart >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Cleanup..."
+rm -rf $desdir
+echo
+echo "Restore SUCCESFULLY"
+sudo cp -f /tmp/restore_lms_fav_out.txt /var/www/system/log/restore_lms_fav_out.txt
+sudo chmod 0666 /var/www/system/log/restore_lms_fav_out.txt
+;;
+
+#Backup LMS Playlists
+backup_lms_pl)
+desdir="/home/music/backup/LMS_Playlist"
+srcdir="/home/music/music_playlists"
+if ! [ -d $desdir ] ; then
+sudo mkdir -p $desdir
+sudo chown -c music $desdir
+sudo chmod 0777 $desdir
+fi
+echo "Backup Playlist-Files..."
+time=`date +%d%m%y_%H%M%S`
+filename="LMS_Playlist_Backup"_"$time.zip"
+sudo zip -r -qdgds 50k $desdir/$filename $srcdir
+echo 
+echo "Backuped to: $desdir/$filename"
+echo
+echo "Backup SUCCESFULLY"
+sudo cp -f /tmp/backup_lms_pl_out.txt /var/www/system/log/backup_lms_pl_out.txt
+sudo chmod 0666 /var/www/system/log/backup_lms_pl_out.txt
+;;
+
+#Restore LMS Playlists
+restore_lms_pl)
+srcdir="/home/music/backup/LMS_Playlist"
+desdir="/tmp/restore_lms_pl"
+targdir="/home/music/music_playlists"
+filename=$2
+if [ -d $desdir ] ; then
+rm -rf $desdir
+fi
+echo "LMS/PLAYER... STOP"
+sudo sc autostop >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Restore Playlist-Files..."
+echo
+echo "Unzip Files "$filename" to "$desdir
+sudo unzip -q -o -d $desdir $srcdir/$filename
+echo "Copy Files to "$srcdir
+sudo cp -f -r $desdir/home /
+sudo chown -cR squeezeboxserver:plugdev $targdir/*.* >/dev/null 2>&1
+echo
+echo "LMS/PLAYER... START"
+sudo sc autostart >/dev/null 2>&1
+echo "OK..."
+echo
+echo "Cleanup..."
+rm -rf $desdir
+echo
+echo "Restore SUCCESFULLY"
+sudo cp -f /tmp/restore_lms_pl_out.txt /var/www/system/log/restore_lms_pl_out.txt
+sudo chmod 0666 /var/www/system/log/restore_lms_pl_out.txt
+;;
+
+#Clear TTS_TMP
+cleantts)
+source "/opt/music_server/sq_cfg/event/sq_tts.cfg"
+
+days1=`expr $TTS_FILE_DEL_DAYS - 1`
+
+echo "Es werden alle Dateien gelöscht die älter als "$TTS_FILE_DEL_DAYS" Tage sind."
+file_count1=$(find "/var/www/event/tts_tmp" -type f | wc -l)
+find "/var/www/event/tts_tmp" -type f -mtime +$days1 -delete
+file_count2=$(find "/var/www/event/tts_tmp" -type f | wc -l)
+file_del=`expr $file_count1 - $file_count2`
+echo "Es wurden "$file_del" Dateien gelöscht."
+;;
+
+#Mount NAS
+mount)
+source "/opt/music_server/sq_cfg/sq_nas.cfg"
+if ! [ -d $NAS_TARGET ] ; then
+mkdir -p $NAS_TARGET
+fi
+if [ $NAS_LOGIN == "1" ];then
+sudo mount -t cifs -o username=$NAS_USER,password=$NAS_PASS,iocharset=$NAS_CHARTSET $NAS_SOURCE $NAS_TARGET
+else 
+sudo mount -t cifs -o guest,iocharset=$NAS_CHARTSET $NAS_SOURCE $NAS_TARGET
+fi
+;;
+#Mount NAS
+automount)
+source "/opt/music_server/sq_cfg/sq_nas.cfg"
+if [ $NAS_AUTOMOUNT == "1" ]; then
+if ! [ -d $NAS_TARGET ] ; then
+mkdir -p $NAS_TARGET
+fi
+if [ $NAS_LOGIN == "1" ];then
+sudo mount -t cifs -o username=$NAS_USER,password=$NAS_PASS,iocharset=$NAS_CHARTSET $NAS_SOURCE $NAS_TARGET
+else 
+sudo mount -t cifs -o guest,iocharset=$NAS_CHARTSET $NAS_SOURCE $NAS_TARGET
+fi
+fi
+;;
+
+#Unmount NAS
+unmount)
+source "/opt/music_server/sq_cfg/sq_nas.cfg"
+pid=$(lsof $NAS_TARGET | awk '{print $2}')
+pid=$(echo $pid | sed -e 's/^.\{,4\}//')
+if [ "$pid" != "" ]; then
+sudo kill -9 $pid
+fi
+sudo umount -f $NAS_TARGET
+sleep 2
+rmdir --ignore-fail-on-non-empty $NAS_TARGET
+;;
+
+#Update Mailer
+update_mailer)
+source "/opt/music_server/sq_cfg/sq_mail.cfg"
+if [ $UPDATE_MAIL == 1 ]; then
+weekday=`date +%-u`
+if [ "$UPDATE_MAIL_PERIOD" == "week" ] && [ "$UPDATE_MAIL_DAY" == "$weekday" ] ;then
+sudo  php /var/www/update_mailer.php >/dev/null 2>&1
+elif [ "$UPDATE_MAIL_PERIOD" == "day" ]; then
+sudo  php /var/www/update_mailer.php >/dev/null 2>&1
+fi
+fi
+;;
+
+clean_event)
+echo "Alle Dateien im Event-Ornder werden geleert."
+sudo echo -n > /opt/music_server/soundcard_cfg/event.cfg
+sudo rm -rf /var/www/event/tts_tmp/*.*
+;;
+
+
+show_device)
+echo "SHOW DEVICES"
+echo "Zur Ausgabe hier wird eine Datei /tmp/devices.txt angelegt. Diese könnt ihr im Fehlerfall mit senden".
+echo "------------------"
+sudo squeezelite -l > /tmp/devices.txt
+cat /tmp/devices.txt
+echo "------------------" 
+;;
+
+
+support_data)
+source "/opt/music_server/sq_cfg/sq_lms.cfg"
+source "/opt/music_server/sq_cfg/sq_version.cfg"
+echo "SUPPORT DATA"
+echo "Es wird eine Datei /var/www/help/support_data.txt angelegt. Diese könnt ihr im Fehlerfall mit senden".
+echo "SUPPORT DATA" > /var/www/help/support_data.txt
+echo "" >> /var/www/help/support_data.txt
+echo "MusicServer4Lox" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+echo "VERS="$VERS >> /var/www/help/support_data.txt
+
+echo "" >> /var/www/help/support_data.txt
+echo "Network" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+# Internetverbindung prüfen
+wget -q --tries=3 --timeout=5 --spider http://google.de
+if [[ $? -eq 0 ]]; then
+echo "WAN"=\"1\" >> /var/www/help/support_data.txt
+else
+echo "WAN"=\"0\" >> /var/www/help/support_data.txt
+fi
+# Interne Netzwerkverbindung
+gateway=$(/sbin/ip route | awk '/default/ { print $3 }')
+if (ping -c 1 -W 1000 $gateway &> /dev/null)||(wget -q --tries=3 --timeout=5 --spider --no-check-certificate $gateway)
+then
+echo "LAN"=\"1\" >> /var/www/help/support_data.txt
+else
+echo "LAN"=\"0\" >> /var/www/help/support_data.txt
+fi
+#WAN IP
+wanip=`curl -4 http://icanhazip.com`
+echo "WANIP"=\"$wanip\" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+echo "" >> /var/www/help/support_data.txt
+echo "System" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+## Ditro
+if [ $debian == 1 ];then
+source /etc/os-release
+dist_name="$PRETTY_NAME"
+kernel=`uname -srm`
+else
+source "/etc/lsb-release"
+dist_name="$DISTRIB_DESCRIPTION ($DISTRIB_CODENAME)"
+kernel=`uname -srm`
+fi
+echo "DISTRO"=\"$dist_name\" >> /var/www/help/support_data.txt
+echo "KERNEL"=\"$kernel\" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+# RAM-Ausnutzung
+memuse1=`cat /proc/meminfo | grep 'MemF' | awk '{print int($2/1000)}'`
+memuse2=`cat /proc/meminfo | grep 'MemT' | awk '{print int($2/1000)}'`
+memuse3=`expr $memuse2 - $memuse1`
+echo "MEMUSED"=\"$memuse3\" >> /var/www/help/support_data.txt
+echo "MEMTOTAL"=\"$memuse2\" >> /var/www/help/support_data.txt
+echo "MEMFREE"=\"$memuse1\" >> /var/www/help/support_data.txt
+
+# SD-Karten-Ausnutzung
+partsda1=`df -m | grep "/dev/sda1 " | wc -l`
+partrootfs=`df -m | grep "rootfs" | wc -l`
+if [ "$partsda1" == "1" ] && [ "$partrootfs" == "0" ]; then
+diskuse1=`df -m | grep "/dev/sda1 " | awk '{print $2}'`
+diskuse1=`echo "scale=2; $diskuse1 / 1000" | bc`
+diskuse2=`df -m | grep "/dev/sda1 " | awk '{print $3}'`
+diskuse2=`echo "scale=2; $diskuse2 / 1000" | bc`
+diskuse3=`echo "scale=2; $diskuse1 - $diskuse2" | bc`
+else
+diskuse1="n.a."
+diskuse2="n.a."
+diskuse3="n.a."
+fi
+echo "DISKUSED"=\"$diskuse2\" >> /var/www/help/support_data.txt
+echo "DISKTOTAL"=\"$diskuse1\" >> /var/www/help/support_data.txt
+echo "DISKFREE"=\"$diskuse3\" >> /var/www/help/support_data.txt
+
+#Uptime
+uptime=$(</proc/uptime)
+uptime=${uptime%%.*}
+seconds=$(( uptime%60 ))
+minutes=$(( uptime/60%60 ))
+hours=$(( uptime/60/60%24 ))
+days=$(( uptime/60/60/24%7 ))
+weeks=$(( uptime/60/60/24/7 ))
+echo "UPWEEKS"=\"$weeks\" >> /var/www/help/support_data.txt
+echo "UPDAYS"=\"$days\" >> /var/www/help/support_data.txt
+echo "UPHOURS"=\"$hours\" >> /var/www/help/support_data.txt
+echo "UPMINUTES"=\"$minutes\" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+echo "" >> /var/www/help/support_data.txt
+echo "LMS / Squeezelite" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+lms_version=`dpkg -l | grep "logitechmediaserver" | awk '{print $3}'`
+sqlite_version=`squeezelite -? | grep "Squeezelite v" | awk '{print $2}' | cut -d "v" -f2 | cut -d "," -f1`
+echo "LMS_VERS"=\"$lms_version\" >> /var/www/help/support_data.txt
+echo "--------------------------------" >> /var/www/help/support_data.txt
+# Verbindung LMS
+wget -q --tries=3 --timeout=5 --spider $LMS_IP:$LMS_WEB_PORT
+if [[ $? -eq 0 ]]; then
+echo "LMS IP="$LMS_IP >> /var/www/help/support_data.txt
+echo "LMS_WEB"=\"1\" >> /var/www/help/support_data.txt
+else
+echo "LMS_WEB"=\"0\" >> /var/www/help/support_data.txt
+fi
+echo "LMS PORT="$LMS_TELNET_PORT >> /var/www/help/support_data.txt
+wget -q --tries=3 --timeout=5 --spider $LMS_IP:$LMS_TELNET_PORT
+if [[ $? -eq 0 ]]; then
+echo "LMS_TEL"=\"1\" >> /var/www/help/support_data.txt
+else
+echo "LMS_TEL"=\"0\" >> /var/www/help/support_data.txt
+fi
+echo "--------------------------------" >> /var/www/help/support_data.txt
+echo "" >> /var/www/help/support_data.txt
+echo "SQLITE_VERS"=\"$sqlite_version\" >> /var/www/help/support_data.txt
+
+echo "--------------------------------" >> /var/www/help/support_data.txt
+ps auxf |grep -ve "grep" | grep -E "squeezelite" | grep -o 'squeezelite.*MusicServer4Lox-Player'  >> /var/www/help/support_data.txt
+echo "--------------------------------" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+
+echo "" >> /var/www/help/support_data.txt
+echo "Soundcard(s)" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+sudo cat /proc/asound/cards > /tmp/soundcards.txt
+sed -n '{p;n}' /tmp/soundcards.txt >> /var/www/help/support_data.txt
+echo "" >> /var/www/help/support_data.txt
+echo "Output Devices" >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+sudo squeezelite -l >> /var/www/help/support_data.txt
+echo "-------------------------------------------------" >> /var/www/help/support_data.txt
+cat /var/www/help/support_data.txt
+;;
+
+
+*)
+clear
+echo -e "\033[7mMusicServer Tools                                                               "$vers"\033[0m"
+echo "================================================================================"
+echo "Commands"
+echo ""
+echo "  mstools system_off         -> shutdown the server"
+echo "  mstools system_reboot      -> reboots the server"
+echo ""
+echo "  mstools update_ubuntu      -> Ubuntu System update"
+echo "  mstools update_lms         -> LMS update"
+echo "  mstools update_squeezelite -> Squeezelite update"
+echo ""
+echo "  mstools cleantts           -> Clean TTS older than set in config"
+echo "  mstools clean_event        -> Cleanup of TTS and Eventfiles"
+echo ""
+echo "  mstools support_data       -> create Supportdata-File"
+echo ""
+echo "================================================================================"
+echo $distro
+;;
+esac
+exit 0

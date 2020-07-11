@@ -29,7 +29,7 @@ elif [ $raspbian == 1 ] && [ $raspbian10 == 1 ];then
 	distro="rasp10"
 	distro2="Raspbian_10"
 else
-	echo -e "\033[7mKeine unterstützte Distribution gefunden. Breche ab.\033[0m"
+	echo -e "\033[30m\033[41mKeine unterstützte Distribution gefunden. Breche ab.\033[0m"
 	exit
 fi
 
